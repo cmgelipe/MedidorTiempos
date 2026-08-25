@@ -12,7 +12,9 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Scanner;
 import org.bson.Document;
 import static medidortiempos.core.medir;
@@ -24,7 +26,6 @@ import static medidortiempos.core.medir;
 public class MedidorTiempos {
 
     private static final int REPETICIONES = 5;
-    private static final String HOST_PUERTO_DEFECTO = "localhost:27017";
 
     /**
      * @param args the command line arguments
@@ -35,31 +36,28 @@ public class MedidorTiempos {
         System.out.print("Ruta del archivo con las operaciones: ");
         Path archivo = Path.of(sc.nextLine().trim());
 
-        System.out.printf("IP (y puerto opcional) de MongoDB [%s]: ", HOST_PUERTO_DEFECTO);
-        String hostPuerto = sc.nextLine().trim();
-        if (hostPuerto.isEmpty()) {
-            hostPuerto = HOST_PUERTO_DEFECTO;
-        } else if (!hostPuerto.contains(":")) {
-            hostPuerto += ":27017";
-        }
-        String uriMongo = "mongodb://" + hostPuerto;
-
         System.out.print("Nombre de la base de datos: ");
         String nombreBd = sc.nextLine().trim();
 
         List<OperacionMongo> operaciones = LectorOperaciones.leer(archivo);
 
-        try (MongoClient client = MongoClients.create(uriMongo)) {
-            MongoDatabase db = client.getDatabase(nombreBd);
+        Map<String, MongoClient> clientesPorHost = new HashMap<>();
+        try {
             for (OperacionMongo op : operaciones) {
+                String hostPuerto = op.host().contains(":") ? op.host() : op.host() + ":27017";
+                MongoClient client = clientesPorHost.computeIfAbsent(hostPuerto,
+                        hp -> MongoClients.create("mongodb://" + hp));
+                MongoDatabase db = client.getDatabase(nombreBd);
                 medirOperacion(db, op);
             }
+        } finally {
+            clientesPorHost.values().forEach(MongoClient::close);
         }
     }
 
     private static void medirOperacion(MongoDatabase db, OperacionMongo op) {
         boolean escritura = EjecutorOperaciones.esEscritura(op);
-        System.out.printf("%n== %s (%s) ==%n", op.lineaOriginal(), escritura ? "escritura, sobre clon temporal" : "lectura");
+        System.out.printf("%n== [%s] %s (%s) ==%n", op.host(), op.lineaOriginal(), escritura ? "escritura, sobre clon temporal" : "lectura");
 
         List<Double> tiempos = new ArrayList<>();
         for (int i = 1; i <= REPETICIONES; i++) {

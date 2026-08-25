@@ -9,7 +9,8 @@ import org.bson.Document;
 
 /**
  * Lee un archivo de texto plano con operaciones escritas como en mongosh
- * (una por línea), por ejemplo: {@code db.empleados.find({nombre:'felipe'})}.
+ * (una por línea), precedidas por la IP a la que se debe conectar, por
+ * ejemplo: {@code 192.168.1.75,db.empleados.find({nombre:'felipe'})}.
  *
  * @author pipe
  */
@@ -32,9 +33,15 @@ final class LectorOperaciones {
     }
 
     private static OperacionMongo parsear(String linea) {
-        String cuerpo = linea.endsWith(";") ? linea.substring(0, linea.length() - 1).trim() : linea;
-        if (!cuerpo.startsWith("db.")) {
-            throw new IllegalArgumentException("Operación inválida, se esperaba 'db.<coleccion>.<metodo>(...)': " + linea);
+        int coma = linea.indexOf(',');
+        if (coma < 0) {
+            throw new IllegalArgumentException("Operación inválida, se esperaba 'IP,db.<coleccion>.<metodo>(...)': " + linea);
+        }
+        String host = linea.substring(0, coma).trim();
+        String cuerpo = linea.substring(coma + 1).trim();
+        cuerpo = cuerpo.endsWith(";") ? cuerpo.substring(0, cuerpo.length() - 1).trim() : cuerpo;
+        if (host.isEmpty() || !cuerpo.startsWith("db.")) {
+            throw new IllegalArgumentException("Operación inválida, se esperaba 'IP,db.<coleccion>.<metodo>(...)': " + linea);
         }
         int puntoColeccion = cuerpo.indexOf('.', 3);
         if (puntoColeccion < 0) {
@@ -57,7 +64,7 @@ final class LectorOperaciones {
                 argumentos.add(parsearArgumento(argCrudo));
             }
         }
-        return new OperacionMongo(linea, coleccion, metodo, argumentos);
+        return new OperacionMongo(cuerpo, host, coleccion, metodo, argumentos);
     }
 
     private static Object parsearArgumento(String argCrudo) {
