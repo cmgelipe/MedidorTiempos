@@ -61,30 +61,44 @@ public class MedidorTiempos {
 
         List<Double> tiempos = new ArrayList<>();
         for (int i = 1; i <= REPETICIONES; i++) {
-            MongoCollection<Document> coleccion;
+            MongoCollection<Document> coleccion = null;
             String coleccionTemp = null;
-            if (escritura) {
-                coleccion = EjecutorOperaciones.clonarColeccion(db, op.coleccion());
-                coleccionTemp = coleccion.getNamespace().getCollectionName();
-            } else {
-                coleccion = db.getCollection(op.coleccion());
+            try {
+                if (escritura) {
+                    coleccion = EjecutorOperaciones.clonarColeccion(db, op.coleccion());
+                    coleccionTemp = coleccion.getNamespace().getCollectionName();
+                    EjecutorOperaciones.eliminarColisionesDeClavesUnicas(coleccion, db.getCollection(op.coleccion()), op);
+                } else {
+                    coleccion = db.getCollection(op.coleccion());
+                }
+
+                MongoCollection<Document> coleccionFinal = coleccion;
+                var medicion = medir(op.metodo() + " rep " + i, () -> EjecutorOperaciones.ejecutar(coleccionFinal, op));
+
+                System.out.printf("  rep %d: %.3f ms%n", i, medicion.ms());
+                tiempos.add(medicion.ms());
+            } catch (RuntimeException e) {
+                System.out.printf("  rep %d: ERROR - %s%n", i, e.getMessage());
+                break;
+            } finally {
+                if (coleccionTemp != null) {
+                    db.getCollection(coleccionTemp).drop();
+                }
             }
+        }
 
-            var medicion = medir(op.metodo() + " rep " + i, () -> EjecutorOperaciones.ejecutar(coleccion, op));
-
-            if (coleccionTemp != null) {
-                db.getCollection(coleccionTemp).drop();
-            }
-
-            System.out.printf("  rep %d: %.3f ms%n", i, medicion.ms());
-            tiempos.add(medicion.ms());
+        if (tiempos.isEmpty()) {
+            System.out.println("  sin mediciones válidas (la operación falló).");
+            return;
         }
 
         double total = tiempos.stream().mapToDouble(Double::doubleValue).sum();
         double promedio = total / tiempos.size();
         System.out.printf("  tiempo total: %.3f ms%n", total);
         System.out.printf("  tiempo promedio: %.3f ms%n", promedio);
-        System.out.printf("  percentil 95 (sin mejor/peor caso): %.3f ms%n", percentil95(tiempos));
+        if (tiempos.size() >= 3) {
+            System.out.printf("  percentil 95 (sin mejor/peor caso): %.3f ms%n", percentil95(tiempos));
+        }
     }
 
     /**

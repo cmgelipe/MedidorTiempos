@@ -3,11 +3,14 @@ package medidortiempos;
 import com.mongodb.client.MongoCollection;
 import com.mongodb.client.MongoDatabase;
 import com.mongodb.client.model.Aggregates;
+import com.mongodb.client.model.Filters;
 import com.mongodb.client.model.IndexOptions;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import org.bson.Document;
+import org.bson.conversions.Bson;
 
 /**
  * Ejecuta una {@link OperacionMongo}. Las operaciones de solo lectura corren
@@ -66,6 +69,80 @@ final class EjecutorOperaciones {
             temp.createIndex(claves, opciones);
         }
         return temp;
+    }
+
+    /**
+     * Campos con índice único de la colección (incluye siempre "_id").
+     * Solo considera índices de un solo campo; los compuestos se ignoran
+     * porque la colisión dependería de la combinación de varios valores.
+     */
+    private static Set<String> camposUnicos(MongoCollection<Document> original) {
+        Set<String> campos = new HashSet<>();
+        campos.add("_id");
+        for (Document indice : original.listIndexes()) {
+            if (!Boolean.TRUE.equals(indice.getBoolean("unique"))) {
+                continue;
+            }
+            Document claves = indice.get("key", Document.class);
+            if (claves.size() == 1) {
+                campos.add(claves.keySet().iterator().next());
+            }
+        }
+        return campos;
+    }
+
+    /**
+     * Evita que insert/update/replace fallen por clave duplicada en el clon
+     * temporal: si el valor que se va a escribir en un campo único ya existe
+     * en otro documento del clon, ese documento se elimina del clon (nunca de
+     * la colección real) antes de medir. Sobre "_id" no se aplica en updates
+     * porque MongoDB no permite modificarlo (campo inmutable).
+     */
+    static void eliminarColisionesDeClavesUnicas(MongoCollection<Document> coll, MongoCollection<Document> original, OperacionMongo op) {
+        Set<String> camposUnicos = camposUnicos(original);
+        List<Object> a = op.argumentos();
+        switch (op.metodo()) {
+            case "insertOne" ->
+                eliminarColisionesInsert(coll, camposUnicos, documento(a, 0));
+            case "insertMany" -> {
+                for (Document doc : documentos(a.get(0))) {
+                    eliminarColisionesInsert(coll, camposUnicos, doc);
+                }
+            }
+            case "updateOne", "findOneAndUpdate" ->
+                eliminarColisionesUpdate(coll, camposUnicos, filtro(a, 0), documento(a, 1).get("$set", Document.class));
+            case "replaceOne", "findOneAndReplace" ->
+                eliminarColisionesUpdate(coll, camposUnicos, filtro(a, 0), documento(a, 1));
+            default -> {
+                // updateMany/deleteOne/deleteMany no fijan un valor único literal a un solo documento
+            }
+        }
+    }
+
+    private static void eliminarColisionesInsert(MongoCollection<Document> coll, Set<String> camposUnicos, Document doc) {
+        for (String campo : camposUnicos) {
+            Object valor = doc.get(campo);
+            if (valor != null) {
+                coll.deleteMany(Filters.eq(campo, valor));
+            }
+        }
+    }
+
+    private static void eliminarColisionesUpdate(MongoCollection<Document> coll, Set<String> camposUnicos, Document filtroOriginal, Document nuevosValores) {
+        if (nuevosValores == null || nuevosValores.isEmpty()) {
+            return;
+        }
+        List<Object> idsObjetivo = new ArrayList<>();
+        for (Document doc : coll.find(filtroOriginal)) {
+            idsObjetivo.add(doc.get("_id"));
+        }
+        for (String campo : camposUnicos) {
+            if (campo.equals("_id") || !nuevosValores.containsKey(campo)) {
+                continue;
+            }
+            Bson colision = Filters.and(Filters.eq(campo, nuevosValores.get(campo)), Filters.nin("_id", idsObjetivo));
+            coll.deleteMany(colision);
+        }
     }
 
     static Object ejecutar(MongoCollection<Document> coll, OperacionMongo op) {

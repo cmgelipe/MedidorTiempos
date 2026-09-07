@@ -22,12 +22,16 @@ final class LectorOperaciones {
     static List<OperacionMongo> leer(Path archivo) throws IOException {
         List<OperacionMongo> operaciones = new ArrayList<>();
         List<String> lineas = Files.readAllLines(archivo);
-        for (String linea : lineas) {
-            String limpia = linea.trim();
+        for (int i = 0; i < lineas.size(); i++) {
+            String limpia = lineas.get(i).trim();
             if (limpia.isEmpty() || limpia.startsWith("//") || limpia.startsWith("#")) {
                 continue;
             }
-            operaciones.add(parsear(limpia));
+            try {
+                operaciones.add(parsear(limpia));
+            } catch (RuntimeException e) {
+                System.err.printf("Línea %d ignorada, no se pudo interpretar: %s%n  motivo: %s%n", i + 1, limpia, e.getMessage());
+            }
         }
         return operaciones;
     }
