@@ -9,6 +9,7 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.regex.Pattern;
 import org.bson.Document;
 import org.bson.conversions.Bson;
 
@@ -143,6 +144,74 @@ final class EjecutorOperaciones {
             Bson colision = Filters.and(Filters.eq(campo, nuevosValores.get(campo)), Filters.nin("_id", idsObjetivo));
             coll.deleteMany(colision);
         }
+    }
+
+    /**
+     * Nombre base de un fragmento, quitando el sufijo "_<número>": de
+     * "multimedia_records_1" devuelve "multimedia_records".
+     */
+    static String prefijoFragmento(String coleccion) {
+        return coleccion.replaceFirst("_\\d+$", "");
+    }
+
+    /**
+     * Nombres de colecciones de {@code db} que comparten el prefijo de fragmento
+     * (mismo esquema "<prefijo>_<número>"), sin importar el número exacto.
+     */
+    static List<String> coleccionesConPrefijo(MongoDatabase db, String prefijo) {
+        Pattern patron = Pattern.compile("^" + Pattern.quote(prefijo) + "_\\d+$");
+        List<String> resultado = new ArrayList<>();
+        for (String nombre : db.listCollectionNames()) {
+            if (patron.matcher(nombre).matches()) {
+                resultado.add(nombre);
+            }
+        }
+        return resultado;
+    }
+
+    /**
+     * Predicado usado para descubrir en qué fragmentos/sitios "vive" una
+     * operación. Para operaciones con filtro propio, es ese mismo filtro.
+     * Para insertOne/insertMany (sin filtro), se construye a partir del/los
+     * _id del documento a insertar. Devuelve {@code null} si no se pudo
+     * construir un predicado (ej. insertOne sin _id).
+     */
+    static Document predicadoDescubrimiento(OperacionMongo op) {
+        List<Object> a = op.argumentos();
+        return switch (op.metodo()) {
+            case "insertOne" ->
+                predicadoPorId(documento(a, 0).get("_id"));
+            case "insertMany" ->
+                predicadoPorIds(documentos(a.get(0)));
+            case "distinct" ->
+                a.size() > 1 ? (Document) a.get(1) : new Document();
+            case "aggregate" ->
+                predicadoDesdeMatch(pipeline(a.get(0)));
+            default ->
+                filtro(a, 0);
+        };
+    }
+
+    private static Document predicadoPorId(Object id) {
+        return id == null ? null : new Document("_id", id);
+    }
+
+    private static Document predicadoPorIds(List<Document> docs) {
+        List<Object> ids = new ArrayList<>();
+        for (Document doc : docs) {
+            Object id = doc.get("_id");
+            if (id != null) {
+                ids.add(id);
+            }
+        }
+        return ids.isEmpty() ? null : new Document("_id", new Document("$in", ids));
+    }
+
+    private static Document predicadoDesdeMatch(List<Document> pipeline) {
+        if (!pipeline.isEmpty() && pipeline.get(0).containsKey("$match")) {
+            return pipeline.get(0).get("$match", Document.class);
+        }
+        return new Document();
     }
 
     static Object ejecutar(MongoCollection<Document> coll, OperacionMongo op) {
